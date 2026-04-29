@@ -24,6 +24,27 @@ workflows:
           else
             echo "Using committed placeholder GoogleService-Info.plist (set BASE64 var for production FCM)"
           fi
+
+          # Validate plist exists and looks like a real Firebase config.
+          if [ ! -f "$PLIST" ]; then
+            echo "ERROR: Missing $PLIST"
+            exit 1
+          fi
+          # Read safe fields (do not print API_KEY).
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :BUNDLE_ID" "$PLIST" 2>/dev/null || true)
+          PROJECT_ID=$(/usr/libexec/PlistBuddy -c "Print :PROJECT_ID" "$PLIST" 2>/dev/null || true)
+          GOOGLE_APP_ID=$(/usr/libexec/PlistBuddy -c "Print :GOOGLE_APP_ID" "$PLIST" 2>/dev/null || true)
+          echo "Firebase plist BUNDLE_ID=${BUNDLE_ID:-<missing>}"
+          echo "Firebase plist PROJECT_ID=${PROJECT_ID:-<missing>}"
+          echo "Firebase plist GOOGLE_APP_ID=${GOOGLE_APP_ID:-<missing>}"
+          if [ -z "${BUNDLE_ID:-}" ] || [ -z "${GOOGLE_APP_ID:-}" ]; then
+            echo "ERROR: GoogleService-Info.plist is invalid (missing required keys)."
+            exit 1
+          fi
+          if [ "${PROJECT_ID:-}" = "somon-ci-placeholder" ]; then
+            echo "ERROR: Placeholder GoogleService-Info.plist detected. Set GOOGLE_SERVICES_INFO_PLIST_BASE64 in Codemagic."
+            exit 1
+          fi
       - name: Get packages
         script: flutter pub get
       - name: Install pods
