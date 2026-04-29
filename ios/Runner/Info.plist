@@ -44,9 +44,12 @@
 	<string>Выбор фото для профиля</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Геолокация нужна для отображения машины на карте и отправки координат заказчику.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Геолокация нужна для отображения машины на карте и отправки координат заказчику.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
 	</array>
 </dict>
 </plist>
+
