@@ -5,9 +5,11 @@ Thumbs.db
 # Django backend (kept locally; not part of this Flutter repo)
 backend/
 
-# Firebase / Apple keys (never commit)
-**/GoogleService-Info.plist
+# Firebase / Apple keys (never commit real secrets)
 **/google-services.json
+**/GoogleService-Info.plist
+# Exception: placeholder plist so Xcode/Codemagic archive finds the file (overwrite in CI with real plist)
+!ios/Runner/GoogleService-Info.plist
 **/*.p8
 **/AuthKey_*.p8
 
