@@ -53,8 +53,12 @@ workflows:
           pod install
       - name: Build IPA
         script: |
-          BUILD_NO="$(( ${BUILD_NUMBER:-1} + 4 ))"
-          echo "Using iOS build number: ${BUILD_NO}"
+          # App Store Connect requires CFBundleVersion to be strictly increasing.
+          # Use Codemagic numeric build counters (CM_BUILD_NUMBER / BUILD_NUMBER) and
+          # apply a large offset to avoid duplicates even if counters reset per-workflow.
+          RAW_BUILD_NO="${CM_BUILD_NUMBER:-${BUILD_NUMBER:-1}}"
+          BUILD_NO="$(( RAW_BUILD_NO + 10000 ))"
+          echo "Using iOS build number: ${BUILD_NO} (raw=${RAW_BUILD_NO})"
           flutter build ipa --release --build-number="${BUILD_NO}"
 
 
