@@ -32,7 +32,8 @@ workflows:
           pod install
       - name: Build IPA
         script: |
-          BUILD_NO="${BUILD_NUMBER:-5}"
+          BUILD_NO="$(( ${BUILD_NUMBER:-1} + 4 ))"
           echo "Using iOS build number: ${BUILD_NO}"
           flutter build ipa --release --build-number="${BUILD_NO}"
+
 
