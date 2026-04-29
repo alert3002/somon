@@ -1,4 +1,4 @@
-# Codemagic â€” iOS archive needs ios/Runner/GoogleService-Info.plist on disk.
+# Codemagic — iOS archive needs ios/Runner/GoogleService-Info.plist on disk.
 # Optional: set GOOGLE_SERVICES_INFO_PLIST_BASE64 in app env to overwrite the
 # committed placeholder with your real Firebase plist before build.
 workflows:
@@ -31,4 +31,7 @@ workflows:
           cd ios
           pod install
       - name: Build IPA
-        script: flutter build ipa --release
+        script: |
+          BUILD_NO="${CM_BUILD_ID:-2}"
+          echo "Using iOS build number: ${BUILD_NO}"
+          flutter build ipa --release --build-number="${BUILD_NO}"
