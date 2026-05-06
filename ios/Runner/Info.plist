@@ -46,6 +46,8 @@
 	<string>Геолокация нужна для отображения машины на карте и отправки координат заказчику.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Геолокация нужна для отображения машины на карте и отправки координат заказчику.</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>Разрешение помогает показывать более релевантный контент и улучшать качество сервиса.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

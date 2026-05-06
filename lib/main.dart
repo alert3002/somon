@@ -47,7 +47,16 @@ class _FcmRegistrar {
     }
 
     try {
-      await FirebaseMessaging.instance.requestPermission();
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
     } catch (_) {
       // ignore
     }
@@ -58,7 +67,16 @@ class _FcmRegistrar {
     await init();
 
     try {
-      final token = await FirebaseMessaging.instance.getToken();
+      // On iOS APNs token can arrive a bit later than app launch.
+      var token = await FirebaseMessaging.instance.getToken();
+      if (defaultTargetPlatform == TargetPlatform.iOS &&
+          (token == null || token.trim().isEmpty)) {
+        for (var i = 0; i < 6; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+          token = await FirebaseMessaging.instance.getToken();
+          if (token != null && token.trim().isNotEmpty) break;
+        }
+      }
       if (token != null && token.trim().isNotEmpty) {
         unawaited(AuthApi().saveFcmDevice(
           accessToken: accessToken,
@@ -2043,7 +2061,15 @@ class AuthPageState extends State<AuthPage> {
     super.dispose();
   }
 
-  bool _isPhoneValid(String phone) => RegExp(r'^\d{9}$').hasMatch(phone);
+  String? _normalizeLocalPhone(String raw) {
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 9) return digits;
+    if (digits.length == 10 && digits.startsWith('0')) return digits.substring(1);
+    if (digits.length == 12 && digits.startsWith('992')) return digits.substring(3);
+    return null;
+  }
+
+  String _phoneForApi(String local9) => '+992$local9';
 
   void _showAuthAlert(String text) {
     if (!mounted) return;
@@ -2093,24 +2119,24 @@ class AuthPageState extends State<AuthPage> {
   }
 
   Future<void> _sendCode() async {
-    final phone = _phoneController.text.trim();
-    if (!_isPhoneValid(phone)) {
+    final localPhone = _normalizeLocalPhone(_phoneController.text.trim());
+    if (localPhone == null) {
       setState(() => _phoneTouched = true);
       _showAuthAlert('Номер должен состоять из 9 цифр');
       return;
     }
     if (_secondsLeft > 0) return;
 
-    final (exists, checkError) = await _api.checkPhoneExists(phone: phone);
-    if (checkError != null) {
-      _showAuthAlert(checkError);
-      return;
+    final phoneApi = _phoneForApi(localPhone);
+    final (exists, checkError) = await _api.checkPhoneExists(phone: phoneApi);
+    if (checkError == null) {
+      setState(() => _phoneExists = exists);
     }
-    setState(() => _phoneExists = exists);
+    // Do not block OTP send on "check phone" error. That endpoint can be flaky.
 
     setState(() => _sending = true);
     final (error, resendIn) = await _api.sendOtp(
-      phone: phone,
+      phone: phoneApi,
       role: _role,
     );
     if (!mounted) return;
@@ -2127,9 +2153,9 @@ class AuthPageState extends State<AuthPage> {
   }
 
   Future<void> _verifyCode() async {
-    final phone = _phoneController.text.trim();
+    final localPhone = _normalizeLocalPhone(_phoneController.text.trim());
     final code = _codeController.text.trim();
-    if (!_isPhoneValid(phone)) {
+    if (localPhone == null) {
       setState(() => _phoneTouched = true);
       _showAuthAlert('Номер должен состоять из 9 цифр');
       return;
@@ -2142,7 +2168,7 @@ class AuthPageState extends State<AuthPage> {
     // Persist franchise join code for next sessions/registrations.
     unawaited(_LocalPrefs.setFranchiseJoinCode(_franchiseJoinController.text));
     final (session, error) = await _api.verifyOtp(
-      phone: phone,
+      phone: _phoneForApi(localPhone),
       code: code,
       role: _role,
       franchiseJoinCode: _franchiseJoinController.text,
@@ -2228,8 +2254,7 @@ class AuthPageState extends State<AuthPage> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final phone = _phoneController.text.trim();
-    final showPhoneError = _phoneTouched && !_isPhoneValid(phone);
+    final showPhoneError = _phoneTouched && _normalizeLocalPhone(_phoneController.text.trim()) == null;
     final isNew = _phoneExists == false;
     final codeStr = _codeController.text.trim();
     final codeReady = _codeSent && RegExp(r'^\d{4}$').hasMatch(codeStr);
@@ -2390,7 +2415,7 @@ class AuthPageState extends State<AuthPage> {
                               keyboardType: TextInputType.phone,
                               inputFormatters: [
                                 FilteringTextInputFormatter.digitsOnly,
-                                LengthLimitingTextInputFormatter(9),
+                                LengthLimitingTextInputFormatter(12),
                               ],
                               onChanged: (_) {
                                 setState(() => _phoneTouched = true);
