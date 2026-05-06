@@ -1147,13 +1147,23 @@ class RequestsApi {
     required String accessToken,
   }) async {
     try {
+      var token = accessToken;
       final uri = Uri.parse('${AuthApi.baseUrl}/api/zayavki/');
-      final response = await http
+      http.Response response = await http
           .get(
             uri,
-            headers: {'Authorization': 'Bearer $accessToken'},
+            headers: {'Authorization': 'Bearer $token'},
           )
           .timeout(const Duration(seconds: 20));
+      if (response.statusCode == 401) {
+        final s = await AuthApi.refreshSessionFromStorage();
+        if (s != null) {
+          token = s.access;
+          response = await http
+              .get(uri, headers: {'Authorization': 'Bearer $token'})
+              .timeout(const Duration(seconds: 20));
+        }
+      }
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return (<Map<String, dynamic>>[], 'Не удалось загрузить заявки');
       }
@@ -1850,7 +1860,13 @@ class _SomonLogisticsAppState extends State<SomonLogisticsApp> {
 
   Future<void> _loadSession() async {
     try {
-      final s = await _LocalPrefs.getSession();
+      var s = await _LocalPrefs.getSession();
+      if (s != null) {
+        final refreshed = await AuthApi.refreshSessionFromStorage();
+        if (refreshed != null) {
+          s = refreshed;
+        }
+      }
       if (!mounted) return;
       setState(() {
         _session = s;
