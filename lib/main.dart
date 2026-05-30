@@ -1583,10 +1583,10 @@ class ProfileApi {
     }
   }
 
-  /// Самоудаление: сервер гузошта `is_active=false`, маълумот дар админ мемонад.
-  Future<(bool, String?)> deactivateAccount({required String accessToken}) async {
+  /// Удаление аккаунта (анонимизация персональных данных на сервере).
+  Future<(bool, String?)> deleteAccount({required String accessToken}) async {
     try {
-      final uri = Uri.parse('${AuthApi.baseUrl}/api/account/deactivate/');
+      final uri = Uri.parse('${AuthApi.baseUrl}/api/account/delete/');
       final response = await http
           .post(
             uri,
@@ -1609,6 +1609,10 @@ class ProfileApi {
       return (false, 'Нет соединения с сервером');
     }
   }
+
+  @Deprecated('Use deleteAccount')
+  Future<(bool, String?)> deactivateAccount({required String accessToken}) =>
+      deleteAccount(accessToken: accessToken);
 
   /// PATCH `api/me/` (multipart) — driver fields + documents.
   Future<(bool, String?)> updateDriverProfile({
@@ -5852,6 +5856,12 @@ class _MyRequestDetailPageState extends State<_MyRequestDetailPage> {
     final origins = _parseStopList(r['origin_stops']);
     final dests = _parseStopList(r['destination_stops']);
     final price = r['price_tjs']?.toString() ?? '';
+    final logCommType = (r['logistics_commission_type'] ?? '').toString().trim().toLowerCase();
+    final logCommValue = r['logistics_commission_value']?.toString() ?? '';
+    final logCommTjs = r['logistics_commission_tjs']?.toString() ?? '';
+    final priceNum = double.tryParse(price.replaceAll(',', '.'));
+    final logCommNum = double.tryParse(logCommTjs.replaceAll(',', '.'));
+    final totalWithComm = (priceNum != null && logCommNum != null) ? priceNum + logCommNum : null;
     final ton = r['tonnage_t']?.toString() ?? '';
     final dist = r['distance_km']?.toString() ?? '';
     final loadD = _formatApiDate(r['load_date']?.toString());
@@ -5959,6 +5969,16 @@ class _MyRequestDetailPageState extends State<_MyRequestDetailPage> {
               _sectionTitle(Icons.route_rounded, 'Маршрут и груз'),
               _detailRow('Расстояние:', dist.isNotEmpty && dist != 'null' ? '$dist км' : '—'),
               _detailRow('Цена:', price.isNotEmpty && price != 'null' ? '$price смн' : '—'),
+              if (logCommTjs.isNotEmpty && logCommTjs != 'null') ...[
+                _detailRow(
+                  'Комиссия логиста:',
+                  logCommType == 'percent' && logCommValue.isNotEmpty
+                      ? '$logCommTjs смн ($logCommValue%)'
+                      : '$logCommTjs смн',
+                ),
+                if (totalWithComm != null)
+                  _detailRow('Итого с комиссией:', '${totalWithComm.toStringAsFixed(0)} смн'),
+              ],
               _detailRow('Общий вес:', ton.isNotEmpty && ton != 'null' ? '$ton тон' : '—'),
             ],
           ),
@@ -6288,7 +6308,9 @@ class _AddRequestContentState extends State<_AddRequestContent> {
   final _receiverPhone = TextEditingController();
   final _price = TextEditingController();
   final _tonnage = TextEditingController();
+  final _logisticsCommissionValue = TextEditingController();
   final _description = TextEditingController();
+  bool _logisticsCommissionIsPercent = false;
   final _loadDateText = TextEditingController();
   final _deliveryDateText = TextEditingController();
   Timer? _draftDebounce;
@@ -6362,10 +6384,41 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       _receiverPhone,
       _price,
       _tonnage,
+      _logisticsCommissionValue,
       _description,
     ]) {
       c.addListener(_scheduleDraftSave);
     }
+    _price.addListener(_onCommissionInputsChanged);
+    _logisticsCommissionValue.addListener(_onCommissionInputsChanged);
+  }
+
+  void _onCommissionInputsChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  double? _parseMoney(String raw) {
+    final s = raw.trim().replaceAll(',', '.');
+    if (s.isEmpty) return null;
+    return double.tryParse(s);
+  }
+
+  double? _logisticsCommissionPreview() {
+    final input = _parseMoney(_logisticsCommissionValue.text);
+    if (input == null || input <= 0) return null;
+    if (!_logisticsCommissionIsPercent) return input;
+    final price = _parseMoney(_price.text);
+    if (price == null || price <= 0) return null;
+    return price * input / 100.0;
+  }
+
+  double? _orderTotalWithLogisticsCommission() {
+    final price = _parseMoney(_price.text);
+    if (price == null) return null;
+    final commission = _logisticsCommissionPreview();
+    if (commission == null) return price;
+    return price + commission;
   }
 
   @override
@@ -6391,10 +6444,13 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       _receiverPhone,
       _price,
       _tonnage,
+      _logisticsCommissionValue,
       _description,
     ]) {
       c.removeListener(_scheduleDraftSave);
     }
+    _price.removeListener(_onCommissionInputsChanged);
+    _logisticsCommissionValue.removeListener(_onCommissionInputsChanged);
     _name.dispose();
     _originAddress.dispose();
     _originWarehouse.dispose();
@@ -6410,6 +6466,7 @@ class _AddRequestContentState extends State<_AddRequestContent> {
     _receiverPhone.dispose();
     _price.dispose();
     _tonnage.dispose();
+    _logisticsCommissionValue.dispose();
     _description.dispose();
     _loadDateText.dispose();
     _deliveryDateText.dispose();
@@ -6437,6 +6494,9 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       _receiverPhone.text = (d['receiver_phone'] ?? '').toString();
       _price.text = (d['price_tjs'] ?? '').toString();
       _tonnage.text = (d['tonnage_t'] ?? '').toString();
+      _logisticsCommissionValue.text = (d['logistics_commission_value'] ?? '').toString();
+      final commType = (d['logistics_commission_type'] ?? '').toString().trim().toLowerCase();
+      _logisticsCommissionIsPercent = commType == 'percent';
       _description.text = (d['description'] ?? '').toString();
 
       _transportId = int.tryParse((d['transport'] ?? '').toString());
@@ -6502,6 +6562,10 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       'dest_lng2': _destLon2,
       'price_tjs': _price.text.trim(),
       'tonnage_t': _tonnage.text.trim(),
+      'logistics_commission_type': _logisticsCommissionValue.text.trim().isEmpty
+          ? ''
+          : (_logisticsCommissionIsPercent ? 'percent' : 'fixed'),
+      'logistics_commission_value': _logisticsCommissionValue.text.trim(),
       'distance_km': _distanceKm,
       'description': _description.text.trim(),
       'sender_name': _senderName.text.trim(),
@@ -6804,6 +6868,33 @@ class _AddRequestContentState extends State<_AddRequestContent> {
     );
   }
 
+  Widget _commissionModeChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: selected ? AppColors.primary : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.montserrat(
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: selected ? Colors.white : AppColors.navy,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   InputDecoration _dec(String label, {IconData? icon, String? hint}) => InputDecoration(
         labelText: label,
         hintText: hint,
@@ -7077,6 +7168,25 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       _toast('Выберите транспорт');
       return;
     }
+    final commInput = _logisticsCommissionValue.text.trim();
+    if (commInput.isNotEmpty) {
+      final commVal = _parseMoney(commInput);
+      if (commVal == null || commVal <= 0) {
+        _toast('Укажите корректную комиссию логиста');
+        return;
+      }
+      if (_logisticsCommissionIsPercent) {
+        final price = _parseMoney(_price.text);
+        if (price == null || price <= 0) {
+          _toast('Укажите сумму заказа для расчёта процента');
+          return;
+        }
+        if (commVal > 100) {
+          _toast('Процент не может быть больше 100');
+          return;
+        }
+      }
+    }
 
     // Ensure coordinates exist for any filled address fields (auto-pick first suggestion).
     if (_originLat == null || _originLon == null) {
@@ -7170,6 +7280,10 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       'receiver_name': _receiverName.text.trim(),
       'receiver_phone': _receiverPhone.text.trim(),
     };
+    if (commInput.isNotEmpty) {
+      payload['logistics_commission_type'] = _logisticsCommissionIsPercent ? 'percent' : 'fixed';
+      payload['logistics_commission_value'] = commInput;
+    }
 
     final (ok, err) = await _api.createRequest(
       accessToken: widget.accessToken,
@@ -7195,6 +7309,8 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       _receiverPhone.clear();
       _price.clear();
       _tonnage.clear();
+      _logisticsCommissionValue.clear();
+      _logisticsCommissionIsPercent = false;
       _description.clear();
       _loadDate = null;
       _deliveryDate = null;
@@ -7578,7 +7694,8 @@ class _AddRequestContentState extends State<_AddRequestContent> {
                       inputFormatters: [
                         FilteringTextInputFormatter.digitsOnly,
                       ],
-                      decoration: _dec('Сумма', icon: Icons.payments_outlined, hint: 'Введите сумму'),
+                      decoration: _dec('Сумма заказа', icon: Icons.payments_outlined, hint: 'Введите сумму заказа'),
+                      onChanged: (_) => _onCommissionInputsChanged(),
                     ),
                   ),
                   const SizedBox(width: 5),
@@ -7594,6 +7711,79 @@ class _AddRequestContentState extends State<_AddRequestContent> {
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+
+              _sectionTitle(Icons.account_balance_wallet_outlined, 'Комиссия логиста'),
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: isDark ? cs.surfaceContainerHighest : const Color(0xFFE8EDF0),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _commissionModeChip(
+                        label: 'Фикс. сумма',
+                        selected: !_logisticsCommissionIsPercent,
+                        onTap: () => setState(() => _logisticsCommissionIsPercent = false),
+                      ),
+                    ),
+                    Expanded(
+                      child: _commissionModeChip(
+                        label: 'Процент',
+                        selected: _logisticsCommissionIsPercent,
+                        onTap: () => setState(() => _logisticsCommissionIsPercent = true),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _logisticsCommissionValue,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                ],
+                decoration: _dec(
+                  _logisticsCommissionIsPercent ? 'Процент (%)' : 'Сумма (смн)',
+                  icon: Icons.percent_rounded,
+                  hint: _logisticsCommissionIsPercent ? 'Например: 5' : 'Например: 1000',
+                ),
+                onChanged: (_) => _onCommissionInputsChanged(),
+              ),
+              if (_logisticsCommissionPreview() != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0x11007D72),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0x33007D72)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Комиссия логиста: ${_logisticsCommissionPreview()!.toStringAsFixed(_logisticsCommissionIsPercent ? 2 : 0)} смн',
+                        style: GoogleFonts.montserrat(fontWeight: FontWeight.w700, color: AppColors.navy),
+                      ),
+                      if (_orderTotalWithLogisticsCommission() != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Итого с комиссией: ${_orderTotalWithLogisticsCommission()!.toStringAsFixed(0)} смн',
+                          style: GoogleFonts.montserrat(
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
 
               _sectionTitle(Icons.date_range_rounded, 'Даты'),
@@ -7643,6 +7833,101 @@ class _AddRequestContentState extends State<_AddRequestContent> {
       ],
     );
   }
+}
+
+/// Диалог и запрос удаления аккаунта (App Store 5.1.1(v)).
+Future<void> confirmAndDeleteUserAccount({
+  required BuildContext context,
+  required ProfileApi api,
+  required String accessToken,
+  required VoidCallback onLogout,
+  required void Function(bool value) onDeletingChanged,
+}) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(
+        'Удалить аккаунт?',
+        style: GoogleFonts.montserrat(fontWeight: FontWeight.w800),
+      ),
+      content: Text(
+        'Это действие необратимо. Ваши персональные данные (телефон, ФИО, фото и документы) '
+        'будут удалены или обезличены, вход в приложение станет невозможен.\n\n'
+        'История выполненных перевозок может сохраняться в обезличенном виде для учёта. '
+        'Вы сможете зарегистрироваться снова с тем же номером телефона.',
+        style: GoogleFonts.montserrat(height: 1.35, fontSize: 13.5),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Отмена'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+          child: const Text('Удалить аккаунт'),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+
+  onDeletingChanged(true);
+  final (success, msg) = await api.deleteAccount(accessToken: accessToken);
+  onDeletingChanged(false);
+  if (!context.mounted) return;
+
+  if (!success) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg ?? 'Не удалось удалить аккаунт')),
+    );
+    return;
+  }
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Аккаунт удалён')),
+  );
+  onLogout();
+}
+
+Widget buildDeleteAccountSection({
+  required BuildContext context,
+  required bool deleting,
+  required VoidCallback onDeleteTap,
+}) {
+  final cs = Theme.of(context).colorScheme;
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
+    decoration: BoxDecoration(
+      color: cs.surface,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: Colors.red.shade700.withValues(alpha: isDark ? 0.45 : 0.35)),
+    ),
+    child: ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.delete_forever_rounded, color: Colors.red.shade700),
+      title: Text(
+        'Удалить аккаунт',
+        style: GoogleFonts.montserrat(
+          fontWeight: FontWeight.w800,
+          color: Colors.red.shade700,
+        ),
+      ),
+      subtitle: Text(
+        'Безвозвратное удаление персональных данных',
+        style: GoogleFonts.montserrat(fontSize: 12.5, height: 1.25),
+      ),
+      trailing: deleting
+          ? SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red.shade700),
+            )
+          : const Icon(Icons.chevron_right_rounded),
+      onTap: deleting ? null : onDeleteTap,
+    ),
+  );
 }
 
 class _ProfileContent extends StatelessWidget {
@@ -7702,6 +7987,7 @@ class _DriverProfileContentState extends State<_DriverProfileContent> {
   final _carNumber = TextEditingController();
 
   bool _loading = true;
+  bool _deleting = false;
   String? _error;
 
   DateTime? _birthDate;
@@ -8037,6 +8323,12 @@ class _DriverProfileContentState extends State<_DriverProfileContent> {
           ),
         ),
         const SizedBox(height: 12),
+        buildDeleteAccountSection(
+          context: context,
+          deleting: _deleting,
+          onDeleteTap: _confirmDeleteAccount,
+        ),
+        const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: widget.onLogout,
           icon: const Icon(Icons.logout_rounded),
@@ -8044,6 +8336,18 @@ class _DriverProfileContentState extends State<_DriverProfileContent> {
         ),
         ],
       ),
+    );
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    await confirmAndDeleteUserAccount(
+      context: context,
+      api: _api,
+      accessToken: widget.accessToken,
+      onLogout: widget.onLogout,
+      onDeletingChanged: (v) {
+        if (mounted) setState(() => _deleting = v);
+      },
     );
   }
 }
@@ -8880,46 +9184,15 @@ class _ClientProfileContentState extends State<_ClientProfileContent> {
   }
 
   Future<void> _confirmDeleteAccount() async {
-    final ok = await showDialog<bool>(
+    await confirmAndDeleteUserAccount(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(
-          'Удалить аккаунт?',
-          style: GoogleFonts.montserrat(fontWeight: FontWeight.w800),
-        ),
-        content: Text(
-          'Вход будет отключён. История заявок и данные останутся у администратора '
-          'и не удаляются из системы. Продолжить?',
-          style: GoogleFonts.montserrat(height: 1.35),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+      api: _api,
+      accessToken: widget.accessToken,
+      onLogout: widget.onLogout,
+      onDeletingChanged: (v) {
+        if (mounted) setState(() => _deleting = v);
+      },
     );
-    if (ok != true || !mounted) return;
-    setState(() => _deleting = true);
-    final (success, msg) = await _api.deactivateAccount(accessToken: widget.accessToken);
-    if (!mounted) return;
-    setState(() => _deleting = false);
-    if (!success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg ?? 'Не удалось удалить аккаунт')),
-      );
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Аккаунт отключён')),
-    );
-    widget.onLogout();
   }
 
   Widget _lrRow(String label, String value) {
@@ -9217,33 +9490,16 @@ class _ClientProfileContentState extends State<_ClientProfileContent> {
               : Text('Сохранить', style: GoogleFonts.montserrat(fontWeight: FontWeight.w700)),
         ),
         const SizedBox(height: 12),
+        buildDeleteAccountSection(
+          context: context,
+          deleting: _deleting,
+          onDeleteTap: _confirmDeleteAccount,
+        ),
+        const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: widget.onLogout,
           icon: const Icon(Icons.logout_rounded),
           label: const Text('Выйти'),
-        ),
-        const SizedBox(height: 20),
-        Center(
-          child: TextButton(
-            onPressed: _deleting ? null : _confirmDeleteAccount,
-            child: _deleting
-                ? SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.red.shade700,
-                    ),
-                  )
-                : Text(
-                    'Удалить аккаунт',
-                    style: GoogleFonts.montserrat(
-                      fontWeight: FontWeight.w700,
-                      color: Colors.red.shade700,
-                      fontSize: 14,
-                    ),
-                  ),
-          ),
         ),
       ],
     );
