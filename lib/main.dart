@@ -905,6 +905,13 @@ class AuthApi {
 
       final data = _decodeJson(response.body);
       if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (data['success'] == false) {
+          final resendIn = data['resend_available_in'];
+          return (
+            (data['message'] ?? 'Не удалось отправить код').toString(),
+            resendIn is int ? resendIn : null,
+          );
+        }
         final resendIn = data['resend_available_in'];
         return (null, resendIn is int ? resendIn : null);
       }
@@ -966,6 +973,9 @@ class AuthApi {
           )
           .timeout(const Duration(seconds: 25));
       final data = _decodeJson(response.body);
+      if (data['success'] == false) {
+        return (null, (data['message'] ?? 'Неверный код').toString());
+      }
       if (response.statusCode >= 200 &&
           response.statusCode < 300 &&
           data['access'] != null &&
@@ -2089,7 +2099,8 @@ class AuthPageState extends State<AuthPage> {
     return null;
   }
 
-  String _phoneForApi(String local9) => '+992$local9';
+  /// E.164 without "+" — сервер нормализует в 992XXXXXXXXX (как в phone_utils).
+  String _phoneForApi(String local9) => '992$local9';
 
   void _showAuthAlert(String text) {
     if (!mounted) return;
