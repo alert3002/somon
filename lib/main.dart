@@ -886,22 +886,60 @@ class AuthApi {
     }
   }
 
+  static const Duration _apiTimeout = Duration(seconds: 40);
+  static const int _apiMaxAttempts = 3;
+
+  Map<String, String> _jsonHeaders() => {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'SomonLogistics/1.0 (Flutter; iOS/Android)',
+      };
+
+  bool _shouldRetryHttpStatus(int code) =>
+      code == 408 || code == 502 || code == 503 || code == 504;
+
+  String _connectionErrorRu(Object? error) {
+    if (error is TimeoutException) {
+      return 'Сервер не отвечает. Проверьте интернет и нажмите «Отправить код» ещё раз.';
+    }
+    return 'Не удалось подключиться к серверу. Проверьте интернет и попробуйте снова.';
+  }
+
+  Future<http.Response> _postWithRetry(Uri uri, String body) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < _apiMaxAttempts; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(Duration(milliseconds: 500 * (1 << attempt)));
+      }
+      try {
+        final response = await http
+            .post(uri, headers: _jsonHeaders(), body: body)
+            .timeout(_apiTimeout);
+        if (_shouldRetryHttpStatus(response.statusCode) && attempt < _apiMaxAttempts - 1) {
+          continue;
+        }
+        return response;
+      } catch (e) {
+        lastError = e;
+        if (attempt >= _apiMaxAttempts - 1) rethrow;
+      }
+    }
+    throw lastError ?? StateError('request failed');
+  }
+
   Future<(String?, int?)> sendOtp({
     required String phone,
     required AppRole role,
   }) async {
     try {
       final uri = Uri.parse('$baseUrl/send_otp/');
-      final response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'phone': phone,
-              'role': _roleApiValue(role),
-            }),
-          )
-          .timeout(const Duration(seconds: 25));
+      final response = await _postWithRetry(
+        uri,
+        jsonEncode({
+          'phone': phone,
+          'role': _roleApiValue(role),
+        }),
+      );
 
       final data = _decodeJson(response.body);
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -920,21 +958,15 @@ class AuthApi {
         (data['message'] ?? 'Не удалось отправить код').toString(),
         resendIn is int ? resendIn : null,
       );
-    } catch (_) {
-      return ('Не удалось подключиться к серверу', null);
+    } catch (e) {
+      return (_connectionErrorRu(e), null);
     }
   }
 
   Future<(bool?, String?)> checkPhoneExists({required String phone}) async {
     try {
       final uri = Uri.parse('$baseUrl/api/check_phone/');
-      final response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'phone': phone}),
-          )
-          .timeout(const Duration(seconds: 25));
+      final response = await _postWithRetry(uri, jsonEncode({'phone': phone}));
       final data = _decodeJson(response.body);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         if (data['exists'] is bool) {
@@ -943,8 +975,8 @@ class AuthApi {
         return (null, null);
       }
       return (null, (data['message'] ?? 'Не удалось проверить номер').toString());
-    } catch (_) {
-      return (null, 'Не удалось подключиться к серверу');
+    } catch (e) {
+      return (null, _connectionErrorRu(e));
     }
   }
 
@@ -965,13 +997,7 @@ class AuthApi {
       if (fj.isNotEmpty) {
         payload['franchise_join_code'] = fj;
       }
-      final response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 25));
+      final response = await _postWithRetry(uri, jsonEncode(payload));
       final data = _decodeJson(response.body);
       if (data['success'] == false) {
         return (null, (data['message'] ?? 'Неверный код').toString());
@@ -990,8 +1016,8 @@ class AuthApi {
         );
       }
       return (null, (data['message'] ?? 'Неверный код').toString());
-    } catch (_) {
-      return (null, 'Не удалось подключиться к серверу');
+    } catch (e) {
+      return (null, _connectionErrorRu(e));
     }
   }
 
