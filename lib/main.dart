@@ -886,8 +886,8 @@ class AuthApi {
     }
   }
 
-  static const Duration _apiTimeout = Duration(seconds: 40);
-  static const int _apiMaxAttempts = 3;
+  static const Duration _apiTimeout = Duration(seconds: 25);
+  static const int _apiMaxAttempts = 4;
 
   Map<String, String> _jsonHeaders() => {
         'Content-Type': 'application/json',
@@ -927,40 +927,108 @@ class AuthApi {
     throw lastError ?? StateError('request failed');
   }
 
+  List<String> _phoneVariants(String phone) {
+    final p = phone.trim();
+    final variants = <String>[];
+    void add(String v) {
+      if (v.isNotEmpty && !variants.contains(v)) variants.add(v);
+    }
+
+    add(p);
+    if (p.startsWith('992') && p.length == 12) {
+      add('+$p');
+      add(p.substring(3));
+    } else if (p.startsWith('+992')) {
+      add(p.substring(1));
+      if (p.length >= 13) add(p.substring(4));
+    } else if (p.length == 9 && p.startsWith('9')) {
+      add('992$p');
+      add('+992$p');
+    }
+    return variants;
+  }
+
+  bool _isConnectionLikeError(String? message) {
+    final m = (message ?? '').toLowerCase();
+    return m.contains('подключ') ||
+        m.contains('соединен') ||
+        m.contains('отвечает') ||
+        m.contains('интернет');
+  }
+
+  Future<(String?, int?)> _sendOtpOnce({
+    required String phone,
+    required AppRole role,
+  }) async {
+    final uri = Uri.parse('$baseUrl/send_otp/');
+    final response = await _postWithRetry(
+      uri,
+      jsonEncode({
+        'phone': phone,
+        'role': _roleApiValue(role),
+      }),
+    );
+
+    final data = _decodeJson(response.body);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (data['success'] == false) {
+        final resendIn = data['resend_available_in'];
+        return (
+          (data['message'] ?? 'Не удалось отправить код').toString(),
+          resendIn is int ? resendIn : null,
+        );
+      }
+      final resendIn = data['resend_available_in'];
+      return (null, resendIn is int ? resendIn : null);
+    }
+    final resendIn = data['resend_available_in'];
+    return (
+      (data['message'] ?? 'Не удалось отправить код').toString(),
+      resendIn is int ? resendIn : null,
+    );
+  }
+
+  Future<bool> probeServer() async {
+    try {
+      final uri = Uri.parse('$baseUrl/api/health/');
+      final response = await http
+          .get(uri, headers: _jsonHeaders())
+          .timeout(const Duration(seconds: 12));
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (_) {
+      try {
+        final uri = Uri.parse('$baseUrl/api/cities/');
+        final response = await http.get(uri).timeout(const Duration(seconds: 12));
+        return response.statusCode >= 200 && response.statusCode < 300;
+      } catch (_) {
+        return false;
+      }
+    }
+  }
+
   Future<(String?, int?)> sendOtp({
     required String phone,
     required AppRole role,
   }) async {
-    try {
-      final uri = Uri.parse('$baseUrl/send_otp/');
-      final response = await _postWithRetry(
-        uri,
-        jsonEncode({
-          'phone': phone,
-          'role': _roleApiValue(role),
-        }),
-      );
+    final variants = _phoneVariants(phone);
+    String? lastError;
+    int? lastResend;
 
-      final data = _decodeJson(response.body);
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        if (data['success'] == false) {
-          final resendIn = data['resend_available_in'];
-          return (
-            (data['message'] ?? 'Не удалось отправить код').toString(),
-            resendIn is int ? resendIn : null,
-          );
+    for (var i = 0; i < variants.length; i++) {
+      try {
+        final (error, resendIn) = await _sendOtpOnce(phone: variants[i], role: role);
+        if (error == null) return (null, resendIn);
+        lastError = error;
+        lastResend = resendIn;
+        if (!_isConnectionLikeError(error) || i >= variants.length - 1) {
+          return (error, resendIn);
         }
-        final resendIn = data['resend_available_in'];
-        return (null, resendIn is int ? resendIn : null);
+      } catch (e) {
+        lastError = _connectionErrorRu(e);
+        if (i >= variants.length - 1) return (lastError, lastResend);
       }
-      final resendIn = data['resend_available_in'];
-      return (
-        (data['message'] ?? 'Не удалось отправить код').toString(),
-        resendIn is int ? resendIn : null,
-      );
-    } catch (e) {
-      return (_connectionErrorRu(e), null);
     }
+    return (lastError ?? 'Не удалось отправить код', lastResend);
   }
 
   Future<(bool?, String?)> checkPhoneExists({required String phone}) async {
@@ -2185,11 +2253,13 @@ class AuthPageState extends State<AuthPage> {
     if (_secondsLeft > 0) return;
 
     final phoneApi = _phoneForApi(localPhone);
-    final (exists, checkError) = await _api.checkPhoneExists(phone: phoneApi);
-    if (checkError == null) {
+
+    // Не блокируем отправку OTP: check_phone идёт параллельно.
+    unawaited(() async {
+      final (exists, checkError) = await _api.checkPhoneExists(phone: phoneApi);
+      if (!mounted || checkError != null) return;
       setState(() => _phoneExists = exists);
-    }
-    // Do not block OTP send on "check phone" error. That endpoint can be flaky.
+    }());
 
     setState(() => _sending = true);
     final (error, resendIn) = await _api.sendOtp(
