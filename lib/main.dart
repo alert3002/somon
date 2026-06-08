@@ -886,8 +886,9 @@ class AuthApi {
     }
   }
 
-  static const Duration _apiTimeout = Duration(seconds: 25);
+  static const Duration _apiTimeout = Duration(seconds: 20);
   static const int _apiMaxAttempts = 4;
+  static const int _otpMaxAttempts = 2;
 
   Map<String, String> _jsonHeaders() => {
         'Content-Type': 'application/json',
@@ -905,9 +906,13 @@ class AuthApi {
     return 'Не удалось подключиться к серверу. Проверьте интернет и попробуйте снова.';
   }
 
-  Future<http.Response> _postWithRetry(Uri uri, String body) async {
+  Future<http.Response> _postWithRetry(
+    Uri uri,
+    String body, {
+    int maxAttempts = _apiMaxAttempts,
+  }) async {
     Object? lastError;
-    for (var attempt = 0; attempt < _apiMaxAttempts; attempt++) {
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) {
         await Future<void>.delayed(Duration(milliseconds: 500 * (1 << attempt)));
       }
@@ -915,13 +920,13 @@ class AuthApi {
         final response = await http
             .post(uri, headers: _jsonHeaders(), body: body)
             .timeout(_apiTimeout);
-        if (_shouldRetryHttpStatus(response.statusCode) && attempt < _apiMaxAttempts - 1) {
+        if (_shouldRetryHttpStatus(response.statusCode) && attempt < maxAttempts - 1) {
           continue;
         }
         return response;
       } catch (e) {
         lastError = e;
-        if (attempt >= _apiMaxAttempts - 1) rethrow;
+        if (attempt >= maxAttempts - 1) rethrow;
       }
     }
     throw lastError ?? StateError('request failed');
@@ -967,6 +972,7 @@ class AuthApi {
         'phone': phone,
         'role': _roleApiValue(role),
       }),
+      maxAttempts: _otpMaxAttempts,
     );
 
     final data = _decodeJson(response.body);
@@ -2243,14 +2249,21 @@ class AuthPageState extends State<AuthPage> {
     });
   }
 
+  bool get _canSendOtp => !_sending && _secondsLeft <= 0;
+
   Future<void> _sendCode() async {
+    if (_sending) return;
+    if (_secondsLeft > 0) {
+      _showAuthAlert('Подождите $_secondsLeft сек. и нажмите снова');
+      return;
+    }
+
     final localPhone = _normalizeLocalPhone(_phoneController.text.trim());
     if (localPhone == null) {
       setState(() => _phoneTouched = true);
-      _showAuthAlert('Номер должен состоять из 9 цифр');
+      _showAuthAlert('Введите 9 цифр номера (например 981234567)');
       return;
     }
-    if (_secondsLeft > 0) return;
 
     final phoneApi = _phoneForApi(localPhone);
 
@@ -2262,20 +2275,23 @@ class AuthPageState extends State<AuthPage> {
     }());
 
     setState(() => _sending = true);
-    final (error, resendIn) = await _api.sendOtp(
-      phone: phoneApi,
-      role: _role,
-    );
-    if (!mounted) return;
-    setState(() => _sending = false);
-    if (error == null) {
-      setState(() => _codeSent = true);
-      _startCountdown(resendIn ?? 60);
-    } else {
-      if (resendIn != null && resendIn > 0) {
-        _startCountdown(resendIn);
+    try {
+      final (error, resendIn) = await _api.sendOtp(
+        phone: phoneApi,
+        role: _role,
+      );
+      if (!mounted) return;
+      if (error == null) {
+        setState(() => _codeSent = true);
+        _startCountdown(resendIn ?? 60);
+      } else {
+        if (resendIn != null && resendIn > 0) {
+          _startCountdown(resendIn);
+        }
+        _showAuthAlert(error);
       }
-      _showAuthAlert(error);
+    } finally {
+      if (mounted) setState(() => _sending = false);
     }
   }
 
@@ -2292,20 +2308,23 @@ class AuthPageState extends State<AuthPage> {
     if (_verifying) return;
 
     setState(() => _verifying = true);
-    // Persist franchise join code for next sessions/registrations.
-    unawaited(_LocalPrefs.setFranchiseJoinCode(_franchiseJoinController.text));
-    final (session, error) = await _api.verifyOtp(
-      phone: _phoneForApi(localPhone),
-      code: code,
-      role: _role,
-      franchiseJoinCode: _franchiseJoinController.text,
-    );
-    if (!mounted) return;
-    setState(() => _verifying = false);
-    if (session != null) {
-      widget.onAuthenticated(session);
-    } else {
-      _showAuthAlert(error ?? 'Ошибка');
+    try {
+      // Persist franchise join code for next sessions/registrations.
+      unawaited(_LocalPrefs.setFranchiseJoinCode(_franchiseJoinController.text));
+      final (session, error) = await _api.verifyOtp(
+        phone: _phoneForApi(localPhone),
+        code: code,
+        role: _role,
+        franchiseJoinCode: _franchiseJoinController.text,
+      );
+      if (!mounted) return;
+      if (session != null) {
+        widget.onAuthenticated(session);
+      } else {
+        _showAuthAlert(error ?? 'Ошибка');
+      }
+    } finally {
+      if (mounted) setState(() => _verifying = false);
     }
   }
 
@@ -2556,6 +2575,8 @@ class AuthPageState extends State<AuthPage> {
                               },
                               decoration: InputDecoration(
                                 labelText: 'Номер телефон',
+                                hintText: '9 цифр, напр. 981234567',
+                                helperText: 'Без +992 — только 9 цифр',
                                 prefixIcon: const Icon(Icons.phone_rounded),
                                 enabledBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
@@ -2577,9 +2598,17 @@ class AuthPageState extends State<AuthPage> {
                             if (!_codeSent) ...[
                               SizedBox(
                                 width: double.infinity,
+                                height: 52,
                                 child: FilledButton(
-                                  onPressed: _sending ? null : _sendCode,
-                                  child: Text(_sending ? 'Отправка...' : 'Отправить код'),
+                                  onPressed: _canSendOtp ? () => unawaited(_sendCode()) : null,
+                                  child: Text(
+                                    _sending
+                                        ? 'Отправка...'
+                                        : _secondsLeft > 0
+                                            ? 'Подождите $_secondsLeft сек'
+                                            : 'Отправить код',
+                                    style: GoogleFonts.montserrat(fontWeight: FontWeight.w700),
+                                  ),
                                 ),
                               ),
                             ] else ...[
