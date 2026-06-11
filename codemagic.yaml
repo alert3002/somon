@@ -58,7 +58,8 @@ workflows:
           # apply a large offset to avoid duplicates even if counters reset per-workflow.
           RAW_BUILD_NO="${CM_BUILD_NUMBER:-${BUILD_NUMBER:-1}}"
           BUILD_NO="$(( RAW_BUILD_NO + 10000 ))"
-          echo "Using iOS build number: ${BUILD_NO} (raw=${RAW_BUILD_NO})"
-          flutter build ipa --release --build-number="${BUILD_NO}"
+          BUILD_NAME="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//' | cut -d'+' -f1)"
+          echo "Using iOS version: ${BUILD_NAME} (${BUILD_NO})"
+          flutter build ipa --release --build-name="${BUILD_NAME}" --build-number="${BUILD_NO}"
 
 

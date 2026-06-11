@@ -1054,45 +1054,74 @@ class AuthApi {
     }
   }
 
+  Future<(AuthSession?, String?)> _verifyOtpOnce({
+    required String phone,
+    required String code,
+    required AppRole role,
+    String? franchiseJoinCode,
+  }) async {
+    final uri = Uri.parse('$baseUrl/verify_otp/');
+    final payload = <String, dynamic>{
+      'phone': phone,
+      'code': code,
+      'role': _roleApiValue(role),
+    };
+    final fj = (franchiseJoinCode ?? '').trim();
+    if (fj.isNotEmpty) {
+      payload['franchise_join_code'] = fj;
+    }
+    final response = await _postWithRetry(
+      uri,
+      jsonEncode(payload),
+      maxAttempts: _otpMaxAttempts,
+    );
+    final data = _decodeJson(response.body);
+    if (data['success'] == false) {
+      return (null, (data['message'] ?? 'Неверный код').toString());
+    }
+    if (response.statusCode >= 200 &&
+        response.statusCode < 300 &&
+        data['access'] != null &&
+        data['refresh'] != null) {
+      return (
+        AuthSession(
+          access: data['access'].toString(),
+          refresh: data['refresh'].toString(),
+          role: _roleFromString(data['role']?.toString()),
+        ),
+        null,
+      );
+    }
+    return (null, (data['message'] ?? 'Неверный код').toString());
+  }
+
   Future<(AuthSession?, String?)> verifyOtp({
     required String phone,
     required String code,
     required AppRole role,
     String? franchiseJoinCode,
   }) async {
-    try {
-      final uri = Uri.parse('$baseUrl/verify_otp/');
-      final payload = <String, dynamic>{
-        'phone': phone,
-        'code': code,
-        'role': _roleApiValue(role),
-      };
-      final fj = (franchiseJoinCode ?? '').trim();
-      if (fj.isNotEmpty) {
-        payload['franchise_join_code'] = fj;
-      }
-      final response = await _postWithRetry(uri, jsonEncode(payload));
-      final data = _decodeJson(response.body);
-      if (data['success'] == false) {
-        return (null, (data['message'] ?? 'Неверный код').toString());
-      }
-      if (response.statusCode >= 200 &&
-          response.statusCode < 300 &&
-          data['access'] != null &&
-          data['refresh'] != null) {
-        return (
-          AuthSession(
-            access: data['access'].toString(),
-            refresh: data['refresh'].toString(),
-            role: _roleFromString(data['role']?.toString()),
-          ),
-          null,
+    final variants = _phoneVariants(phone);
+    String? lastError;
+    for (var i = 0; i < variants.length; i++) {
+      try {
+        final (session, error) = await _verifyOtpOnce(
+          phone: variants[i],
+          code: code,
+          role: role,
+          franchiseJoinCode: franchiseJoinCode,
         );
+        if (session != null) return (session, null);
+        lastError = error;
+        if (!_isConnectionLikeError(error) || i >= variants.length - 1) {
+          return (null, error);
+        }
+      } catch (e) {
+        lastError = _connectionErrorRu(e);
+        if (i >= variants.length - 1) return (null, lastError);
       }
-      return (null, (data['message'] ?? 'Неверный код').toString());
-    } catch (e) {
-      return (null, _connectionErrorRu(e));
     }
+    return (null, lastError ?? 'Неверный код');
   }
 
   Future<(bool, String?)> saveFcmDevice({
@@ -2090,7 +2119,7 @@ class _SomonLogisticsAppState extends State<SomonLogisticsApp> {
           : LogisticsShell(
               session: _session!,
               role: _session!.role,
-              initialIndex: _session!.role == AppRole.driver ? 2 : 0,
+              initialIndex: 0,
               driverVerified: _session!.role == AppRole.driver ? false : true,
               onLogout: () {
                 unawaited(_FcmRegistrar.dispose());
